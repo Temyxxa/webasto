@@ -1,3 +1,4 @@
+#include <GyverFilters.h>
 #include <GyverPID.h>
 #include <Bounce2.h>
 #define methodWait 0
@@ -5,6 +6,7 @@
 #define methodFireUp 2
 #define methodWork 3
 #define methodBlowDown 4
+GMedian<20, float> flameFilter;  
 // * - переменную нельзя менять в объявлении
 int candle_pin = 3;
 int fuel_pump_pin = 5;
@@ -29,20 +31,20 @@ int currentMethod = 0;  //*текущий режим работы
 float temp1 = 0;        //*переведённая температура с датчика1
 float temp2 = 0;        //*переведённая температура с датчика2(дублирующего)
 int fan_speed = 0;      //*текущая скорость вентилятора
-float levelFlame = 0;     //*переведённое в попугаи значение датчика пламени
+float levelFlame = 20;     //*переведённое в попугаи значение датчика пламени
 int onStartSensor = 1000;//*последние сохранённые данные с датчика пламени
 int clicks = 0;     //*текущее количество переходов вкл/выкл датчика температуры
 int lastClickState = 0;
 //**************************КОНЕЦ БЛОКА НЕПРИКАСАЕМЫХ ПЕРЕМЕННЫХ***************************//
-float intervals[15] = {0, 0.03, 0.02, 10, 1, 30, 60, 0.1, 1, 1, 1, 180};  // Интервалы работы таймеров(№см sMillis)
+float intervals[15] = {0, 0.03, 0.02, 10, 1, 30, 30, 0.1, 1, 1, 1, 180};  // Интервалы работы таймеров(№см sMillis)
 int max_fan_speed = 200;//максимальная скорость вентилятора
 int min_fan_speed = 30;//максимальная скорость вентилятора
 float min_temp = 30;    //температура запуска WEBASTO
-float max_temp = 60;    //температура отключения WEBASTO
+float max_temp = 70;    //температура отключения WEBASTO
 float min_power = 7.0;    //минимальное время подачи топлива
 float max_power = 0.250;    //максимальное время подачи топлива
 float flamePoint = 5;
-int flameLevel[4] = {17, 21, 17, 21};
+int flameLevel[4] = {17, 19, 15, 20};
 void setup() {
   Serial.begin(9600);
   pinMode(generator_sensor_pin, INPUT);
@@ -112,8 +114,9 @@ void wait() {
   digitalWrite(candle_pin, LOW);
   //digitalWrite(fan_pin, LOW);
   if (failStart < 3 && digitalRead(generator_sensor_pin) == 0 &&
-      (debouncer.read() == 0 && temp1 < min_temp && temp2 < min_temp) || (clicks == 5 && temp1 < max_temp && temp2 < max_temp))
+      (debouncer.read() == 0 && temp1 < min_temp && temp2 < min_temp) || (clicks == 5 && temp1 < max_temp && temp2 < max_temp)){
     currentMethod = methodBlowUp;
+    }
   if (digitalRead(generator_sensor_pin) == 0 && levelFlame < flameLevel[0]) currentMethod = methodBlowDown;
   if (digitalRead(generator_sensor_pin) == 1) failStart = 0;
   if (checkTimer(11) == 2 && failStart != 0) setTimer(11, intervals[11]); else if (checkTimer(11) == 1) failStart = 0;
@@ -122,7 +125,8 @@ void wait() {
 void workers() {
   temp1 = floatMap(analogRead(temp_sensor_pin), 0, 350, 15, 65.0);
   temp2 = floatMap(analogRead(temp2_sensor_pin), 0, 350, 15, 65.0);
-  levelFlame = floatMap(analogRead(flame_sensor_pin), 370, 870, 0, 100);
+  //levelFlame = floatMap(analogRead(flame_sensor_pin), 370, 870, 0, 100);
+  levelFlame = flameFilter.filtered(floatMap(analogRead(flame_sensor_pin), 370, 870, 0, 100));
   analogWrite(fan_pin, fan_speed);
   debouncer.update();
 }
@@ -163,7 +167,17 @@ void fireUp() {
 
 void work() {
   regulator.input = levelFlame;
-  if (temp1 > max_temp || temp2 > max_temp || digitalRead(generator_sensor_pin) == 1) currentMethod = methodBlowDown;
+  if ((temp1 > max_temp || temp2 > max_temp || digitalRead(generator_sensor_pin) == 1) //если достигнут предел температуры ОЖ
+  or (checkTimer(7) == 0 && levelFlame > flameLevel[1])) {// или ошибка при пуске
+  currentMethod = methodBlowDown; //уход на выключение
+  Serial.print("outOfBounds: t1:");
+  Serial.print(temp1);
+  Serial.print(";t2:");
+  Serial.print(temp2);
+  Serial.print(";lF:");
+  Serial.println(levelFlame);
+  
+  }
   if (fan_speed >= max_fan_speed && power >= 100) resetTimer(7);
   if (checkTimer(7) == 1) {
     if (fan_speed - 0.9 < max_fan_speed && fan_speed + 0.9 > max_fan_speed) fan_speed = max_fan_speed;
@@ -196,7 +210,7 @@ void work() {
 
 void printDebug() {
   if (checkTimer(10) == 1) {
-    setTimer(10, 1);
+    setTimer(10, intervals[10]);
 
 
     Serial.print("af:");
@@ -213,6 +227,10 @@ void printDebug() {
 
     Serial.print("t2:");
     Serial.print(temp2);
+    Serial.print(";");
+
+    Serial.print("t3:");
+    Serial.print(digitalRead(temp_bool_sensor_pin));
     Serial.print(";");
 
     Serial.print("p:");
